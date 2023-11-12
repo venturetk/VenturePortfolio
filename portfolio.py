@@ -1,6 +1,6 @@
 import json
 from datetime import datetime
-#version 2
+#version = 0.0.2
 
 class Asset:
     def __init__(self, name, market_value):
@@ -21,6 +21,17 @@ class Position:
     @property
     def total_market_value(self):
         return self.quantity * self.spot_price
+
+    def cost_basis_per_unit(self):
+        if self.quantity > 0:
+            return self.cost_basis / self.quantity
+        else:
+            return 0  # Return 0 or appropriate value when quantity is zero to avoid division by zero error
+
+    def __str__(self):
+        return (f"Position(asset={self.asset.name}, quantity={self.quantity}, date_acquired={self.date_acquired}, " +
+                f"cost_basis={self.cost_basis}, cost_basis_per_unit={self.cost_basis_per_unit()}, " +
+                f"total_market_value={self.total_market_value})")
 
 
 class Wallet:
@@ -61,6 +72,10 @@ class Transaction:
         self.sent_total_value = self.sent_quantity * self.sent_spot_price if self.sent_quantity and self.sent_spot_price else 0
         self.origin_wallet = origin_wallet
         self.destination_wallet = destination_wallet
+        if self.fee_quantity > 0:
+            fee_entry = FeeEntry(self.date, self.time, self.fee_asset, self.fee_quantity, self.fee_spot_price)
+            portfolio.fee_ledger.add_fee_entry(fee_entry)
+        self.gainloss = 0  # Initialize gain/loss to zero
 
     def fetch_market_price(self, asset: Asset):
         # Placeholder for market price fetching logic
@@ -71,6 +86,58 @@ class Transaction:
             self.process_deposit(portfolio)
         if self.transaction_type == 'Withdraw':
             self.process_withdraw(portfolio)
+        if self.transaction_type == 'Order':
+            self.process_order(portfolio)
+		# Calculate realized gain/loss
+        self.calculate_realized_gain_loss()
+		# If there is a realized gain, create a GainLossEntry and add it to the gain-loss ledger
+        if self.gainloss > 0:
+            gain_loss_entry = GainLossEntry(self.date, self.time, self.gainloss)
+            portfolio.gain_loss_ledger.add_entry(gain_loss_entry)
+	
+    def process_order(self, portfolio):
+        wallet = next((w for w in portfolio.wallets if w.name == self.origin_wallet.name), None)
+        if not wallet:
+            print("Wallet not found.")
+            return
+
+        sent_position = next((pos for pos in wallet.positions if pos.asset.name == self.sent_asset.name), None)
+        if sent_position and sent_position.quantity >= self.sent_quantity:
+            cost_basis_reduction = self.sent_quantity * sent_position.cost_basis_per_unit()
+            sent_position.quantity -= self.sent_quantity
+            sent_position.cost_basis -= cost_basis_reduction
+
+            # Calculate gain or loss
+            market_value_of_sent_quantity = self.sent_quantity * self.sent_spot_price
+            gain_loss = market_value_of_sent_quantity - cost_basis_reduction
+
+            # Create GainLossEntry if there's a gain or loss
+            if gain_loss != 0:
+                gain_loss_entry = GainLossEntry(self.date, self.time, gain_loss)
+                portfolio.gain_loss_ledger.add_entry(gain_loss_entry)
+
+            if sent_position.quantity == 0:
+                wallet.remove_position(sent_position)
+        else:
+            print("Not enough asset in the position to cover the order.")
+            return
+
+        # Handling the received asset
+        received_position = next((pos for pos in wallet.positions if pos.asset.name == self.received_asset.name), None)
+        if received_position:
+            received_position.quantity += self.received_quantity
+            received_position.cost_basis += self.received_quantity * self.received_spot_price
+        else:
+            # Create a new position for the received asset
+            new_position = Position(
+                asset=self.received_asset,
+                quantity=self.received_quantity,
+                date_acquired=f"{self.date} {self.time}",
+                cost_basis=self.received_quantity * self.received_spot_price
+            )
+            wallet.add_position(new_position)
+
+        print(f"Order transaction processed in wallet '{wallet.name}'.")
 
     def process_withdraw(self, portfolio):
         origin_wallet = next((wallet for wallet in portfolio.wallets if wallet.name == self.origin_wallet.name), None)
@@ -108,6 +175,11 @@ class Transaction:
         )
         destination_wallet.add_position(position)
 
+    def calculate_realized_gain_loss(self):
+        # Placeholder for gain/loss calculation logic
+        # This function should update self.gainloss with the calculated value
+        pass
+		
     def __str__(self):
         origin_wallet_name = self.origin_wallet.name if self.origin_wallet else "N/A"
         destination_wallet_name = self.destination_wallet.name if self.destination_wallet else "N/A"
@@ -135,8 +207,10 @@ class Portfolio:
     def __init__(self, name):
         self.name = name
         self.assets = [Asset("USD", 1.0)]
-        self.ledger = Ledger(self)  # Pass self to the Ledger constructor
+        self.ledger = Ledger(self)
         self.wallets = []
+        self.fee_ledger = FeeLedger()  # Fee ledger for tracking fees
+        self.gain_loss_ledger = GainLossLedger()  # Gain/Loss ledger for tracking gains and losses
 
     def add_asset(self, asset):
         self.assets.append(asset)
@@ -147,10 +221,6 @@ class Portfolio:
     def add_wallet(self, wallet):
         self.wallets.append(wallet)
 
-    def process_transactions(self):
-        # Logic to parse through ledger and update wallets and positions
-        pass
-		
     def update_wallet_positions(self):
         # Clear current positions in each wallet
         for wallet in self.wallets:
@@ -159,6 +229,63 @@ class Portfolio:
         # Re-process each transaction in chronological order
         for transaction in self.ledger.transactions:
             transaction.process_transaction(self)
+
+class FeeEntry:
+    def __init__(self, date, time, fee_asset, fee_quantity, fee_spot_price):
+        self.date = date
+        self.time = time
+        self.fee_asset = fee_asset
+        self.fee_quantity = fee_quantity
+        self.fee_spot_price = fee_spot_price
+        self.fee_total_value = self.fee_quantity * self.fee_spot_price
+
+    def __str__(self):
+        return (f"FeeEntry(Date: {self.date}, Time: {self.time}, Asset: {self.fee_asset.name}, " +
+                f"Quantity: {self.fee_quantity}, Spot Price: {self.fee_spot_price}, " +
+                f"Total Value: {self.fee_total_value})")
+
+class FeeLedger:
+    def __init__(self):
+        self.fees = []
+
+    def add_fee_entry(self, fee_entry):
+        self.fees.append(fee_entry)
+        self.fees.sort(key=lambda x: (x.date, x.time))
+
+    def remove_fee_entry(self, fee_entry):
+        if fee_entry in self.fees:
+            self.fees.remove(fee_entry)
+            self.fees.sort(key=lambda x: (x.date, x.time))
+
+    def view_all_fees(self):
+        for fee in self.fees:
+            print(fee)
+			
+class GainLossEntry:
+    def __init__(self, date, time, gain_amount):
+        self.date = date
+        self.time = time
+        self.gain_amount = gain_amount
+
+    def __str__(self):
+        return (f"GainLossEntry(Date: {self.date}, Time: {self.time}, Gain/Loss Amount: {self.gain_amount})")
+		
+class GainLossLedger:
+    def __init__(self):
+        self.entries = []
+
+    def add_entry(self, entry):
+        self.entries.append(entry)
+        self.entries.sort(key=lambda x: (x.date, x.time))
+
+    def remove_entry(self, entry):
+        if entry in self.entries:
+            self.entries.remove(entry)
+            self.entries.sort(key=lambda x: (x.date, x.time))
+
+    def view_all_entries(self):
+        for entry in self.entries:
+            print(entry)
 
 def save_portfolio_to_file(portfolio, filename):
     # Convert the portfolio object to a JSON string and save it to a file
@@ -362,8 +489,53 @@ def add_order_transaction(portfolio):
 
 
 def add_internal_transaction(portfolio):
-    # Logic to add an Internal transaction
-    pass
+    print("\nAdding an Internal Transaction")
+
+    # Handling date and time with defaults
+    date = input("Enter the date (YYYY-MM-DD), leave blank for today: ").strip()
+    time = input("Enter the time (HH:MM), leave blank for now: ").strip()
+
+    date = date if date else datetime.now().strftime("%Y-%m-%d")
+    time = time if time else datetime.now().strftime("%H:%M")
+
+    # Choosing the origin wallet
+    print("Choose the origin wallet:")
+    origin_wallet = choose_wallet_from_portfolio(portfolio)
+    if not origin_wallet:
+        return
+
+    # Choosing the destination wallet
+    print("Choose the destination wallet:")
+    destination_wallet = choose_wallet_from_portfolio(portfolio)
+    if not destination_wallet:
+        return
+
+    # Gathering details about the asset being transferred
+    sent_quantity = float(input("Enter the quantity of the asset to transfer: "))
+    sent_asset = choose_asset_from_portfolio(portfolio)
+    if not sent_asset:
+        return
+
+    # Handling fee
+    fee_quantity = float(input("Enter the fee quantity, 0 for no fee: "))
+    fee_asset = None
+    if fee_quantity > 0:
+        fee_asset = choose_asset_from_portfolio(portfolio)
+        if not fee_asset:
+            return
+
+    classification = input("Enter the classification: ")
+
+    # Creating the transaction
+    internal_transaction = Transaction(
+        date=date, time=time, transaction_type='Internal',
+        fee_quantity=fee_quantity, fee_asset=fee_asset, classification=classification,
+        sent_quantity=sent_quantity, sent_asset=sent_asset,
+        origin_wallet=origin_wallet, destination_wallet=destination_wallet
+    )
+
+    portfolio.ledger.add_transaction(internal_transaction)
+    print("Internal transaction added successfully.")
 
 def remove_transaction_from_ledger(portfolio):
     # Logic to remove a transaction
