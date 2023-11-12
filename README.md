@@ -2,11 +2,11 @@
 A python cryptocurrenty portfolio tracker. Learning project
 
 # To Use
-Select option 1 and create a portfolio. 
-Back to main menu, select option 2 and add some assets. 
-Option 3, add at least 1 wallet. 
-Option 4, add transactions, internal txs are not implemented. 
-Nothing is finished.
+- Select option 1 and create a portfolio. 
+- Back to main menu, select option 2 and add some assets. 
+- Option 3, add at least 1 wallet. 
+- Option 4, add transactions, internal txs are not implemented. 
+- Nothing is finished.
 
 # TODO
 - logic to process order transactions
